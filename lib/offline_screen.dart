@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 
 class OfflineScreen extends StatelessWidget {
-  const OfflineScreen({super.key, required this.onRetry});
+  const OfflineScreen({super.key, required this.onRetry, this.onViewCached});
 
   final VoidCallback onRetry;
+  final VoidCallback? onViewCached;
 
   @override
   Widget build(BuildContext context) {
@@ -32,6 +33,13 @@ class OfflineScreen extends StatelessWidget {
                   onPressed: onRetry,
                   child: const Text('Retry'),
                 ),
+                if (onViewCached != null) ...[
+                  const SizedBox(height: 12),
+                  OutlinedButton(
+                    onPressed: onViewCached,
+                    child: const Text('View cached page'),
+                  ),
+                ],
               ],
             ),
           ),

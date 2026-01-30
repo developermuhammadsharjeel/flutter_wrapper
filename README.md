@@ -11,6 +11,7 @@ Flutter wrapper app for a single web experience.
   - `flutter pub run flutter_native_splash:create`
   - `flutter pub run flutter_launcher_icons:main`
 - Configure deep link URL schemes for iOS/Android as needed.
+- Web JavaScript bridge: use `FlutterBridge.postMessage('navigate:/path')`, `FlutterBridge.postMessage('external:https://...')`, or `FlutterBridge.postMessage('refresh')`.
 
 ## Features
 
@@ -20,6 +21,7 @@ Flutter wrapper app for a single web experience.
 - Handles back button navigation.
 - Deep link and FCM route handling.
 - Offline screen handling.
+- Offline cache option to show the last loaded page.
 - HTTPS-only navigation and external link handling.
 
 ## Development

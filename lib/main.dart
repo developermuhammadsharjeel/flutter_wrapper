@@ -13,14 +13,14 @@ import 'app_config.dart';
 import 'offline_screen.dart';
 
 const String _lastUrlKey = 'last_url';
-const String _fcmRouteKey = 'fcm_route';
 
 Future<void> _firebaseBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
 }
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
   FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
   runApp(const WrapperApp());
 }
@@ -51,7 +51,7 @@ class _WebWrapperScreenState extends State<WebWrapperScreen> {
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   late final WebViewController _controller;
   bool _isOffline = false;
-  String _pendingRoute = '';
+  String _currentUrl = '';
 
   @override
   void initState() {
@@ -73,10 +73,29 @@ class _WebWrapperScreenState extends State<WebWrapperScreen> {
   }
 
   Future<void> _bootstrap() async {
+    await _checkInitialConnectivity();
     await _restoreSession();
     _listenConnectivity();
     _listenDeepLinks();
     _listenFcmMessages();
+  }
+
+  Future<void> _checkInitialConnectivity() async {
+    final results = await Connectivity().checkConnectivity();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isOffline = _isOfflineFromResults(results);
+    });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (baseUrl.contains('example.com')) {
+      debugPrint('Update baseUrl in lib/app_config.dart before release.');
+    }
   }
 
   Future<void> _restoreSession() async {
@@ -90,9 +109,7 @@ class _WebWrapperScreenState extends State<WebWrapperScreen> {
   void _listenConnectivity() {
     _connectivitySubscription =
         Connectivity().onConnectivityChanged.listen((results) {
-      final offline = !results.contains(ConnectivityResult.mobile) &&
-          !results.contains(ConnectivityResult.wifi) &&
-          !results.contains(ConnectivityResult.ethernet);
+      final offline = _isOfflineFromResults(results);
       if (offline != _isOffline) {
         setState(() {
           _isOffline = offline;
@@ -101,13 +118,14 @@ class _WebWrapperScreenState extends State<WebWrapperScreen> {
     });
   }
 
+  bool _isOfflineFromResults(List<ConnectivityResult> results) {
+    return results.contains(ConnectivityResult.none);
+  }
+
   void _listenDeepLinks() {
     _linkSubscription = _appLinks.uriLinkStream.listen((uri) {
-      if (uri == null) {
-        return;
-      }
-      _pendingRoute = uri.toString();
-      _loadUrl(_pendingRoute, allowSameDomainOnly: true);
+      final resolvedUrl = _resolveDeepLink(uri);
+      _loadUrl(resolvedUrl, allowSameDomainOnly: true);
     });
   }
 
@@ -115,15 +133,13 @@ class _WebWrapperScreenState extends State<WebWrapperScreen> {
     FirebaseMessaging.onMessage.listen((message) {
       final route = message.data['route']?.toString();
       if (route != null && route.isNotEmpty) {
-        _pendingRoute = route;
-        _loadUrl(_pendingRoute, allowSameDomainOnly: true);
+        _loadUrl(_resolveRoute(route), allowSameDomainOnly: true);
       }
     });
     FirebaseMessaging.onMessageOpenedApp.listen((message) {
       final route = message.data['route']?.toString();
       if (route != null && route.isNotEmpty) {
-        _pendingRoute = route;
-        _loadUrl(_pendingRoute, allowSameDomainOnly: true);
+        _loadUrl(_resolveRoute(route), allowSameDomainOnly: true);
       }
     });
   }
@@ -152,6 +168,7 @@ class _WebWrapperScreenState extends State<WebWrapperScreen> {
   }
 
   void _onPageFinished(String url) {
+    _currentUrl = url;
     _persistLastUrl(url);
     _injectWebTweaks();
   }
@@ -175,8 +192,29 @@ class _WebWrapperScreenState extends State<WebWrapperScreen> {
     await _controller.loadRequest(uri);
   }
 
+  String _resolveDeepLink(Uri uri) {
+    if (uri.scheme == 'https') {
+      return uri.toString();
+    }
+    final path = uri.path;
+    final query = uri.hasQuery ? '?${uri.query}' : '';
+    final fragment = uri.hasFragment ? '#${uri.fragment}' : '';
+    return Uri.parse(baseUrl).resolve('$path$query$fragment').toString();
+  }
+
+  String _resolveRoute(String route) {
+    final uri = Uri.tryParse(route);
+    if (uri == null) {
+      return baseUrl;
+    }
+    if (uri.scheme == 'https') {
+      return uri.toString();
+    }
+    return Uri.parse(baseUrl).resolve(route).toString();
+  }
+
   Future<void> _injectWebTweaks() async {
-    const disableZoomJs = """
+    const disableZoomJs = r'''
       var meta = document.querySelector('meta[name=viewport]');
       if (!meta) {
         meta = document.createElement('meta');
@@ -188,15 +226,23 @@ class _WebWrapperScreenState extends State<WebWrapperScreen> {
       document.body.style.overscrollBehavior = 'none';
       document.body.style.touchAction = 'pan-y';
       document.body.style.overflowX = 'hidden';
-    """;
-    await _controller.runJavaScript(disableZoomJs);
+    ''';
+    try {
+      await _controller.runJavaScript(disableZoomJs);
+    } catch (error) {
+      debugPrint('Failed to inject web tweaks: $error');
+    }
   }
 
   void _handleJsMessage(JavaScriptMessage message) {
+    final currentUri = Uri.tryParse(_currentUrl);
+    if (currentUri == null || !_isSameDomain(currentUri)) {
+      return;
+    }
     final payload = message.message;
     if (payload.startsWith('navigate:')) {
       final target = payload.replaceFirst('navigate:', '').trim();
-      _loadUrl(target, allowSameDomainOnly: true);
+      _loadUrl(_resolveRoute(target), allowSameDomainOnly: true);
     } else if (payload.startsWith('external:')) {
       final target = payload.replaceFirst('external:', '').trim();
       final uri = Uri.tryParse(target);
@@ -227,11 +273,16 @@ class _WebWrapperScreenState extends State<WebWrapperScreen> {
   Widget build(BuildContext context) {
     if (_isOffline) {
       return OfflineScreen(
-        onRetry: () {
+        onRetry: () async {
+          await _checkInitialConnectivity();
+          if (!_isOffline) {
+            _controller.reload();
+          }
+        },
+        onViewCached: () {
           setState(() {
             _isOffline = false;
           });
-          _controller.reload();
         },
       );
     }
